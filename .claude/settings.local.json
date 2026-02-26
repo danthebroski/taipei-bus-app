@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx create-next-app@latest:*)",
+      "Bash(curl:*)",
+      "Bash(gunzip:*)",
+      "Bash(python3:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm install:*)",
+      "Bash(npx next build:*)",
+      "Bash(node --version:*)",
+      "Bash(npm --version:*)",
+      "Bash(node -e \"\nfetch\\(''https://tcgbusfs.blob.core.windows.net/blobbus/GetRoute.gz''\\)\n  .then\\(r => { console.log\\(''status:'', r.status\\); return r.json\\(\\); }\\)\n  .then\\(d => console.log\\(''keys:'', Object.keys\\(d\\), ''count:'', d.BusInfo?.length\\)\\)\n  .catch\\(e => console.error\\(''error:'', e.message\\)\\)\n\")",
+      "Bash(kill:*)",
+      "Bash(npm run dev:*)",
+      "WebSearch",
+      "WebFetch(domain:ebus.gov.taipei)",
+      "WebFetch(domain:data.ntpc.gov.tw)"
+    ]
+  }
+}

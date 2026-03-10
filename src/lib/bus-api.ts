@@ -83,6 +83,13 @@ const cache: {
   estimates?: CacheEntry<EstimateTime>;
 } = {};
 
+// Maps TDX route IDs to their source city (populated during route normalization)
+const tdxRouteCity = new Map<number, TdxCity>();
+
+// Per-city TDX estimate cache (fetched on-demand, not in bulk)
+const tdxEstimateCache = new Map<TdxCity, CacheEntry<EstimateTime>>();
+const TDX_ESTIMATE_CACHE_MS = 15_000; // 15 seconds
+
 const STATIC_CACHE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const ESTIMATE_CACHE_MS = 10 * 1000; // 10 seconds
 
@@ -299,8 +306,10 @@ function tdxId(rawId: string, city: TdxCity): number {
 function normalizeTdxRoute(r: TdxRoute, city: TdxCity): Route {
   const goSub = r.SubRoutes?.find((s) => s.Direction === 0);
   const backSub = r.SubRoutes?.find((s) => s.Direction === 1);
+  const id = tdxId(r.RouteID, city);
+  tdxRouteCity.set(id, city);
   return {
-    Id: tdxId(r.RouteID, city),
+    Id: id,
     nameZh: r.RouteName.Zh_tw,
     nameEn: r.RouteName.En || '',
     departureZh: r.DepartureStopNameZh || '',
@@ -392,29 +401,18 @@ async function fetchAllTdxStops(): Promise<Stop[]> {
     .flatMap((r) => r.value);
 }
 
-async function fetchAllTdxEstimates(): Promise<EstimateTime[]> {
-  // TDX estimates require credentials (23 cities every 10s exceeds free tier)
-  if (!process.env.TDX_CLIENT_ID) return [];
+async function fetchTdxEstimatesForCity(city: TdxCity): Promise<EstimateTime[]> {
+  const cached = tdxEstimateCache.get(city);
+  if (isFresh(cached, TDX_ESTIMATE_CACHE_MS)) return cached!.data;
 
-  const promises = [
-    ...TDX_CITIES.map((city) =>
-      fetchTdx<TdxEstimate>(
-        `/v2/Bus/EstimatedTimeOfArrival/City/${city}?$format=JSON`
-      ).then((data) => data.map((e) => normalizeTdxEstimate(e, city)))
-    ),
-    fetchTdx<TdxEstimate>(
-      '/v2/Bus/EstimatedTimeOfArrival/InterCity?$format=JSON'
-    ).then((data) =>
-      data.map((e) => normalizeTdxEstimate(e, 'InterCity'))
-    ),
-  ];
-  const results = await Promise.allSettled(promises);
-  return results
-    .filter(
-      (r): r is PromiseFulfilledResult<EstimateTime[]> =>
-        r.status === 'fulfilled'
-    )
-    .flatMap((r) => r.value);
+  const path =
+    city === 'InterCity'
+      ? '/v2/Bus/EstimatedTimeOfArrival/InterCity?$format=JSON'
+      : `/v2/Bus/EstimatedTimeOfArrival/City/${city}?$format=JSON`;
+  const raw = await fetchTdx<TdxEstimate>(path);
+  const estimates = raw.map((e) => normalizeTdxEstimate(e, city));
+  tdxEstimateCache.set(city, { data: estimates, fetchedAt: Date.now() });
+  return estimates;
 }
 
 // --- Helpers ---
@@ -479,16 +477,33 @@ export async function getStops(): Promise<Stop[]> {
 
 export async function getEstimates(): Promise<EstimateTime[]> {
   if (!isFresh(cache.estimates, ESTIMATE_CACHE_MS)) {
-    const [tpeRaw, ntpcRaw, tdxEstimates] = await Promise.all([
+    const [tpeRaw, ntpcRaw] = await Promise.all([
       fetchTpeGz<EstimateTime>('GetEstimateTime.gz'),
       fetchNtpcJson<NtpcEstimateRaw>(NTPC_ESTIMATES_ID),
-      fetchAllTdxEstimates().catch(() => [] as EstimateTime[]),
     ]);
     const ntpc = ntpcRaw.map(normalizeNtpcEstimate);
     cache.estimates = {
-      data: [...tpeRaw, ...ntpc, ...tdxEstimates],
+      data: [...tpeRaw, ...ntpc],
       fetchedAt: Date.now(),
     };
   }
   return cache.estimates!.data;
+}
+
+export async function getEstimatesForRoute(
+  routeId: number
+): Promise<EstimateTime[]> {
+  // First try bulk TPE/NTPC estimates
+  const bulk = await getEstimates();
+  const matched = bulk.filter((e) => e.RouteID === routeId);
+  if (matched.length > 0) return matched;
+
+  // If no results and this is a TDX route, fetch from that specific city
+  const city = tdxRouteCity.get(routeId);
+  if (!city) return [];
+
+  const cityEstimates = await fetchTdxEstimatesForCity(city).catch(
+    () => [] as EstimateTime[]
+  );
+  return cityEstimates.filter((e) => e.RouteID === routeId);
 }

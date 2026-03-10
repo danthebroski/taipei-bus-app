@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getEstimates } from '@/lib/bus-api';
+import { getEstimates, getEstimatesForRoute } from '@/lib/bus-api';
 
 export async function GET(request: NextRequest) {
   try {
     const routeId = request.nextUrl.searchParams.get('routeId');
-    let estimates = await getEstimates();
 
+    // When routeId is provided, use the smart fetcher that tries TDX on-demand
     if (routeId) {
-      estimates = estimates.filter((e) => e.RouteID === parseInt(routeId, 10));
+      const estimates = await getEstimatesForRoute(parseInt(routeId, 10));
+      return NextResponse.json(estimates);
     }
 
+    // Bulk: return all TPE/NTPC estimates
+    const estimates = await getEstimates();
     return NextResponse.json(estimates);
   } catch (e) {
     console.error('Failed to fetch estimates:', e);

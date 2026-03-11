@@ -3,25 +3,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Route } from '@/lib/types';
-
-const QUICK_ROUTES = ['307', '99', '藍38', '657'];
+import { RecentRoute, getRecent, addRecent, removeRecent } from '@/lib/recent-routes';
 
 export default function Home() {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Route[]>([]);
-  const [quickRoutes, setQuickRoutes] = useState<Route[]>([]);
   const [loading, setLoading] = useState(false);
+  const [recentRoutes, setRecentRoutes] = useState<RecentRoute[]>([]);
 
   useEffect(() => {
-    fetch('/api/routes')
-      .then((r) => r.json())
-      .then((routes: Route[]) => {
-        const quick = QUICK_ROUTES.map((name) =>
-          routes.find((r) => r.nameZh === name)
-        ).filter(Boolean) as Route[];
-        setQuickRoutes(quick);
-      });
+    setRecentRoutes(getRecent());
   }, []);
 
   const search = useCallback(async (q: string) => {
@@ -34,14 +26,26 @@ export default function Home() {
     try {
       const res = await fetch(`/api/routes?q=${encodeURIComponent(q)}`);
       const data = await res.json();
-      setResults(data.slice(0, 20));
+      setResults(Array.isArray(data) ? data.slice(0, 20) : []);
     } finally {
       setLoading(false);
     }
   }, []);
 
   const goToRoute = (route: Route) => {
+    addRecent({
+      Id: route.Id,
+      nameZh: route.nameZh,
+      departureZh: route.departureZh,
+      destinationZh: route.destinationZh,
+    });
+    setRecentRoutes(getRecent());
     router.push(`/route/${route.Id}?name=${encodeURIComponent(route.nameZh)}`);
+  };
+
+  const handleRemove = (id: number) => {
+    removeRecent(id);
+    setRecentRoutes(getRecent());
   };
 
   return (
@@ -101,30 +105,56 @@ export default function Home() {
         </div>
       )}
 
-      {/* Quick Access */}
+      {/* Recent Routes & Nearby */}
       {!query && (
         <>
           <div className="mb-6">
-            <h2 className="text-sm font-medium text-gray-500 mb-2">常用路線</h2>
-            <div className="grid grid-cols-2 gap-3">
-              {quickRoutes.map((route) => (
-                <button
-                  key={route.Id}
-                  onClick={() => goToRoute(route)}
-                  className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 hover:bg-gray-50 active:bg-gray-100 transition-colors"
-                >
-                  <div className="text-2xl font-bold text-blue-600 mb-1">
-                    {route.nameZh}
+            <h2 className="text-sm font-medium text-gray-500 mb-2">最近搜尋</h2>
+            {recentRoutes.length === 0 ? (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 text-center text-gray-400">
+                <div className="text-3xl mb-2">&#x1F50D;</div>
+                <div className="text-sm">搜尋公車路線開始使用</div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 divide-y divide-gray-100">
+                {recentRoutes.map((route) => (
+                  <div key={route.Id} className="flex items-center px-4 py-3 gap-3">
+                    <button
+                      onClick={() =>
+                        goToRoute({
+                          Id: route.Id,
+                          nameZh: route.nameZh,
+                          departureZh: route.departureZh,
+                          destinationZh: route.destinationZh,
+                          nameEn: '',
+                          goFirstBusTime: '',
+                          goLastBusTime: '',
+                          backFirstBusTime: '',
+                          backLastBusTime: '',
+                          peakHeadway: '',
+                          offPeakHeadway: '',
+                        })
+                      }
+                      className="flex items-center gap-3 flex-1 min-w-0 text-left"
+                    >
+                      <span className="bg-blue-600 text-white px-3 py-1 rounded-lg font-bold text-base min-w-[60px] text-center shrink-0">
+                        {route.nameZh}
+                      </span>
+                      <span className="text-sm text-gray-600 truncate">
+                        {route.departureZh} ↔ {route.destinationZh}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => handleRemove(route.Id)}
+                      className="text-gray-300 hover:text-gray-500 text-xl leading-none p-1 shrink-0"
+                      aria-label="移除"
+                    >
+                      &times;
+                    </button>
                   </div>
-                  <div className="text-xs text-gray-500 truncate">
-                    {route.departureZh}
-                  </div>
-                  <div className="text-xs text-gray-400 truncate">
-                    → {route.destinationZh}
-                  </div>
-                </button>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Nearby Stops Button */}

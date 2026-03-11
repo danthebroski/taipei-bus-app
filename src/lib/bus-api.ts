@@ -10,6 +10,31 @@ const NTPC_ROUTES_ID = '0EE4E6BF-CEE6-4EC8-8FE1-71F544015127';
 const NTPC_STOPS_ID = '34B402A8-53D9-483D-9406-24A682C2D6DC';
 const NTPC_ESTIMATES_ID = '07F7CCB3-ED00-43C4-966D-08E9DAB24E95';
 
+export interface TimetableEntry {
+  Id: number;
+  PathAttributeId: number;
+  DateType: string;
+  DateValue: string;
+  DepartureTime: string;
+  IsLastBus: string;
+}
+
+export interface RawTpeRoute {
+  Id: number;
+  pathAttributeId: number;
+  pathAttributeName: string;
+  nameZh: string;
+  nameEn: string;
+  departureZh: string;
+  destinationZh: string;
+  goFirstBusTime: string;
+  goLastBusTime: string;
+  backFirstBusTime: string;
+  backLastBusTime: string;
+  peakHeadway: string;
+  offPeakHeadway: string;
+}
+
 interface CacheEntry<T> {
   data: T[];
   fetchedAt: number;
@@ -19,6 +44,8 @@ const cache: {
   routes?: CacheEntry<Route>;
   stops?: CacheEntry<Stop>;
   estimates?: CacheEntry<EstimateTime>;
+  timetable?: CacheEntry<TimetableEntry>;
+  rawTpeRoutes?: CacheEntry<RawTpeRoute>;
 } = {};
 
 const STATIC_CACHE_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -38,9 +65,14 @@ async function fetchTpeGz<T>(endpoint: string): Promise<T[]> {
 // --- NTPC fetchers (paginated JSON API) ---
 
 async function fetchNtpcJson<T>(datasetId: string, pageSize = 100000): Promise<T[]> {
-  const res = await fetch(`${NTPC_BASE}/${datasetId}/json?size=${pageSize}`);
-  if (!res.ok) throw new Error(`Failed to fetch NTPC ${datasetId}: ${res.status}`);
-  return (await res.json()) as T[];
+  try {
+    const res = await fetch(`${NTPC_BASE}/${datasetId}/json?size=${pageSize}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return (await res.json()) as T[];
+  } catch (e) {
+    console.warn(`NTPC fetch failed for ${datasetId}, falling back to empty:`, e);
+    return [];
+  }
 }
 
 // NTPC fields are lowercase; normalize to match Taipei City format
@@ -150,12 +182,19 @@ export async function getRoutes(): Promise<Route[]> {
 
 export async function getStops(): Promise<Stop[]> {
   if (!isFresh(cache.stops, STATIC_CACHE_MS)) {
+    let tpeFailed = false;
     const [tpeRaw, ntpcRaw] = await Promise.all([
-      fetchTpeGz<Stop>('GetStop.gz'),
+      fetchTpeGz<Stop>('GetStop.gz').catch((e) => {
+        console.warn('TPE GetStop.gz unavailable, will retry in 5 min:', e.message);
+        tpeFailed = true;
+        return [] as Stop[];
+      }),
       fetchNtpcJson<NtpcStopRaw>(NTPC_STOPS_ID),
     ]);
     const ntpc = ntpcRaw.map(normalizeNtpcStop);
-    cache.stops = { data: [...tpeRaw, ...ntpc], fetchedAt: Date.now() };
+    // If TPE stops failed, cache expires in 5 min so we retry soon
+    const staleness = tpeFailed ? STATIC_CACHE_MS - 5 * 60 * 1000 : 0;
+    cache.stops = { data: [...tpeRaw, ...ntpc], fetchedAt: Date.now() - staleness };
   }
   return cache.stops!.data;
 }
@@ -170,4 +209,20 @@ export async function getEstimates(): Promise<EstimateTime[]> {
     cache.estimates = { data: [...tpeRaw, ...ntpc], fetchedAt: Date.now() };
   }
   return cache.estimates!.data;
+}
+
+export async function getTimetable(): Promise<TimetableEntry[]> {
+  if (!isFresh(cache.timetable, STATIC_CACHE_MS)) {
+    const raw = await fetchTpeGz<TimetableEntry>('GetTimeTable.gz');
+    cache.timetable = { data: raw, fetchedAt: Date.now() };
+  }
+  return cache.timetable!.data;
+}
+
+export async function getRawTpeRoutes(): Promise<RawTpeRoute[]> {
+  if (!isFresh(cache.rawTpeRoutes, STATIC_CACHE_MS)) {
+    const raw = await fetchTpeGz<RawTpeRoute>('GetRoute.gz');
+    cache.rawTpeRoutes = { data: raw, fetchedAt: Date.now() };
+  }
+  return cache.rawTpeRoutes!.data;
 }

@@ -15,7 +15,13 @@
       "Bash(npm run dev:*)",
       "WebSearch",
       "WebFetch(domain:ebus.gov.taipei)",
-      "WebFetch(domain:data.ntpc.gov.tw)"
+      "WebFetch(domain:data.ntpc.gov.tw)",
+      "Bash(node:*)",
+      "Bash(cat:*)",
+      "Bash(pkill:*)",
+      "Bash(lsof:*)",
+      "Bash(npx tsc:*)",
+      "Bash(ls:*)"
     ]
   }
 }

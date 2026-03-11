@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Route, Stop, EstimateTime } from '@/lib/types';
 import { formatEstimate } from '@/lib/estimate-utils';
+import { formatBusTime, formatHeadway } from '@/lib/format-time';
 import EstimateBadge from '@/components/EstimateBadge';
 import CountdownTimer from '@/components/CountdownTimer';
 import PullToRefresh from '@/components/PullToRefresh';
@@ -27,6 +28,7 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
   const [stops, setStops] = useState<StopWithEstimate[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [noData, setNoData] = useState(false);
 
   // Fetch route info once
   useEffect(() => {
@@ -39,21 +41,34 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
 
   // Fetch stops once
   const [rawStops, setRawStops] = useState<Stop[]>([]);
+  const [stopsLoaded, setStopsLoaded] = useState(false);
   useEffect(() => {
     fetch(`/api/stops?routeId=${id}`)
       .then((r) => r.json())
-      .then((data: Stop[]) => setRawStops(data));
+      .then((data: Stop[]) => setRawStops(Array.isArray(data) ? data : []))
+      .catch(() => setRawStops([]))
+      .finally(() => setStopsLoaded(true));
   }, [id]);
 
   // Fetch estimates and merge
   const fetchEstimates = useCallback(async () => {
+    setNoData(false);
     try {
       const res = await fetch(`/api/estimates?routeId=${id}`);
       const estimates: EstimateTime[] = await res.json();
 
-      const estimateMap = new Map<string, string>();
+      if (estimates.length === 0) {
+        setNoData(true);
+      }
+
+      // Key by StopID only. NTPC estimates use GoBack '2'/'3' which never match
+      // the direction strings '0'/'1', so including GoBack in the key drops most
+      // NTPC estimates. Direction filtering happens below via stop.goBack.
+      const estimateMap = new Map<number, string>();
       for (const e of estimates) {
-        estimateMap.set(`${e.StopID}-${e.GoBack}`, e.EstimateTime);
+        if (!estimateMap.has(e.StopID)) {
+          estimateMap.set(e.StopID, e.EstimateTime);
+        }
       }
 
       const dirStops = rawStops
@@ -61,7 +76,7 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
         .sort((a, b) => a.seqNo - b.seqNo);
 
       const merged: StopWithEstimate[] = dirStops.map((stop) => {
-        const est = estimateMap.get(`${stop.Id}-${direction}`);
+        const est = estimateMap.get(stop.Id);
         const { status, statusText, estimateMinutes } = formatEstimate(est);
         return { ...stop, status, statusText, estimateMinutes };
       });
@@ -73,11 +88,14 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
   }, [id, rawStops, direction]);
 
   useEffect(() => {
+    if (!stopsLoaded) return;
     if (rawStops.length > 0) {
       setLoading(true);
       fetchEstimates();
+    } else {
+      setLoading(false);
     }
-  }, [rawStops, direction, fetchEstimates, refreshKey]);
+  }, [stopsLoaded, rawStops, direction, fetchEstimates, refreshKey]);
 
   const handleRefresh = useCallback(async () => {
     await fetchEstimates();
@@ -93,6 +111,8 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
     direction === '0' ? route?.departureZh : route?.destinationZh;
   const destinationLabel =
     direction === '0' ? route?.destinationZh : route?.departureZh;
+
+  const timetableUrl = `/route/${id}/timetable?name=${encodeURIComponent(routeName || route?.nameZh || '')}&dir=${direction}`;
 
   return (
     <PullToRefresh onRefresh={handleRefresh}>
@@ -119,27 +139,37 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
 
         {/* Route Info */}
         {route && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 mb-4 text-sm text-gray-600 grid grid-cols-2 gap-2">
-            <div>
-              <span className="text-gray-400">首班車：</span>
-              {direction === '0' ? route.goFirstBusTime : route.backFirstBusTime}
-            </div>
-            <div>
-              <span className="text-gray-400">末班車：</span>
-              {direction === '0' ? route.goLastBusTime : route.backLastBusTime}
-            </div>
-            {route.peakHeadway && (
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 mb-4 text-sm text-gray-600">
+            <div className="grid grid-cols-2 gap-2">
               <div>
-                <span className="text-gray-400">尖峰：</span>
-                {route.peakHeadway} 分
+                <span className="text-gray-400">首班車：</span>
+                {formatBusTime(direction === '0' ? route.goFirstBusTime : route.backFirstBusTime)}
               </div>
-            )}
-            {route.offPeakHeadway && (
               <div>
-                <span className="text-gray-400">離峰：</span>
-                {route.offPeakHeadway} 分
+                <span className="text-gray-400">末班車：</span>
+                {formatBusTime(direction === '0' ? route.goLastBusTime : route.backLastBusTime)}
               </div>
-            )}
+              {route.peakHeadway && (
+                <div>
+                  <span className="text-gray-400">尖峰：</span>
+                  {formatHeadway(route.peakHeadway)}
+                </div>
+              )}
+              {route.offPeakHeadway && (
+                <div>
+                  <span className="text-gray-400">離峰：</span>
+                  {formatHeadway(route.offPeakHeadway)}
+                </div>
+              )}
+            </div>
+            <div className="mt-2 pt-2 border-t border-gray-100 text-right">
+              <a
+                href={timetableUrl}
+                className="text-blue-500 hover:text-blue-700 text-xs"
+              >
+                時刻表 &rsaquo;
+              </a>
+            </div>
           </div>
         )}
 
@@ -179,6 +209,24 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
         {departureLabel && destinationLabel && (
           <div className="text-sm text-gray-500 mb-3">
             {directionLabel}：{departureLabel} → {destinationLabel}
+          </div>
+        )}
+
+        {/* No Real-Time Data Banner */}
+        {!loading && noData && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-4">
+            <div className="flex items-start gap-2">
+              <span className="text-amber-500 text-lg leading-none mt-0.5">&#x24D8;</span>
+              <div>
+                <p className="text-amber-800 font-medium text-sm">此路線目前無即時動態資訊</p>
+                <a
+                  href={timetableUrl}
+                  className="inline-block mt-2 text-sm text-amber-700 underline hover:text-amber-900"
+                >
+                  查看時刻表
+                </a>
+              </div>
+            </div>
           </div>
         )}
 

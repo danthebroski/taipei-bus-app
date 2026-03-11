@@ -34,9 +34,13 @@ export async function GET(request: NextRequest) {
     ]);
 
     const routeMap = new Map(routes.map((r) => [r.Id, r]));
-    const estimateMap = new Map(
-      estimates.map((e) => [`${e.RouteID}-${e.StopID}-${e.GoBack}`, e.EstimateTime])
-    );
+    // Key by RouteID-StopID only; GoBack from NTPC estimates is '2'/'3' which
+    // never matches stop.goBack ('0'/'1'), so we drop it from the key.
+    const estimateMap = new Map<string, string>();
+    for (const e of estimates) {
+      const k = `${e.RouteID}-${e.StopID}`;
+      if (!estimateMap.has(k)) estimateMap.set(k, e.EstimateTime);
+    }
 
     // Deduplicate by stopLocationId to avoid showing the same physical stop multiple times
     const nearbyStops: NearbyStop[] = [];
@@ -55,7 +59,7 @@ export async function GET(request: NextRequest) {
       seenLocations.add(key);
 
       const route = routeMap.get(stop.routeId);
-      const estKey = `${stop.routeId}-${stop.Id}-${stop.goBack}`;
+      const estKey = `${stop.routeId}-${stop.Id}`;
       const est = estimateMap.get(estKey);
       const { status, statusText, estimateMinutes } = formatEstimate(est);
 

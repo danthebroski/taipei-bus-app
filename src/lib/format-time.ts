@@ -1,3 +1,16 @@
+export type Period = 'peak' | 'offpeak' | 'holiday';
+
+/** Returns which headway period applies right now. */
+export function getCurrentPeriod(): Period {
+  const now = new Date();
+  const day = now.getDay(); // 0=Sun, 6=Sat
+  if (day === 0 || day === 6) return 'holiday';
+  const mins = now.getHours() * 60 + now.getMinutes();
+  // Peak: 07:00–09:00 and 16:30–19:00
+  if ((mins >= 420 && mins < 540) || (mins >= 990 && mins < 1140)) return 'peak';
+  return 'offpeak';
+}
+
 /** "0500" → "05:00", "05:00" → "05:00" */
 export function formatBusTime(t: string): string {
   if (!t) return '';

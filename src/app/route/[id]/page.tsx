@@ -1,15 +1,25 @@
 'use client';
 
-import { useState, useEffect, useCallback, use } from 'react';
+import { useState, useEffect, useCallback, useRef, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Route, Stop, EstimateTime } from '@/lib/types';
 import { formatEstimate } from '@/lib/estimate-utils';
-import { formatBusTime, formatHeadway } from '@/lib/format-time';
+import { formatBusTime, formatHeadway, getCurrentPeriod, Period } from '@/lib/format-time';
 import EstimateBadge from '@/components/EstimateBadge';
 import CountdownTimer from '@/components/CountdownTimer';
 import PullToRefresh from '@/components/PullToRefresh';
 
 const REFRESH_INTERVAL = 15;
+
+function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const φ1 = (lat1 * Math.PI) / 180;
+  const φ2 = (lat2 * Math.PI) / 180;
+  const Δφ = ((lat2 - lat1) * Math.PI) / 180;
+  const Δλ = ((lng2 - lng1) * Math.PI) / 180;
+  const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 interface StopWithEstimate extends Stop {
   status: 'arriving' | 'soon' | 'waiting' | 'not-running';
@@ -29,6 +39,11 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [noData, setNoData] = useState(false);
+  const [currentPeriod, setCurrentPeriod] = useState<Period>(getCurrentPeriod);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [nearestStopId, setNearestStopId] = useState<number | null>(null);
+  const nearestStopRef = useRef<HTMLDivElement>(null);
+  const scrolledRef = useRef(false);
 
   // Fetch route info once
   useEffect(() => {
@@ -97,6 +112,53 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
     }
   }, [stopsLoaded, rawStops, direction, fetchEstimates, refreshKey]);
 
+  // Update period every minute
+  useEffect(() => {
+    const interval = setInterval(() => setCurrentPeriod(getCurrentPeriod()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Request geolocation once on mount
+  useEffect(() => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      () => { /* permission denied or unavailable – silently ignore */ },
+      { enableHighAccuracy: true, timeout: 10_000 }
+    );
+  }, []);
+
+  // Find nearest stop in current direction when location or stops change
+  // Only highlight if within 300m — otherwise the user isn't actually at a stop
+  useEffect(() => {
+    if (!userLocation || stops.length === 0) return;
+    let minDist = 300; // 300m threshold
+    let nearest: number | null = null;
+    for (const stop of stops) {
+      const lat = parseFloat(stop.latitude);
+      const lng = parseFloat(stop.longitude);
+      if (isNaN(lat) || isNaN(lng)) continue;
+      const d = haversineDistance(userLocation.lat, userLocation.lng, lat, lng);
+      if (d < minDist) { minDist = d; nearest = stop.Id; }
+    }
+    setNearestStopId(nearest);
+  }, [userLocation, stops]);
+
+  // Reset scroll flag when direction changes
+  useEffect(() => { scrolledRef.current = false; }, [direction]);
+
+  // Jump to nearest stop once per direction (instant, after DOM settles)
+  useEffect(() => {
+    if (!nearestStopId || scrolledRef.current) return;
+    const el = nearestStopRef.current;
+    if (!el) return;
+    scrolledRef.current = true;
+    const timer = setTimeout(() => {
+      el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [nearestStopId, stops]);
+
   const handleRefresh = useCallback(async () => {
     await fetchEstimates();
   }, [fetchEstimates]);
@@ -106,7 +168,6 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
   }, []);
 
   const directionLabel = direction === '0' ? '去程' : '返程';
-  const otherDirection = direction === '0' ? '1' : '0';
   const departureLabel =
     direction === '0' ? route?.departureZh : route?.destinationZh;
   const destinationLabel =
@@ -137,41 +198,49 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
           </div>
         </div>
 
-        {/* Route Info */}
-        {route && (
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 mb-4 text-sm text-gray-600">
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <span className="text-gray-400">首班車：</span>
-                {formatBusTime(direction === '0' ? route.goFirstBusTime : route.backFirstBusTime)}
+        {/* Route Info: compact headway card */}
+        {route && (() => {
+          const allPeriods: { key: Period; label: string; headway: string | undefined }[] = [
+            { key: 'peak', label: '尖峰', headway: route.peakHeadway },
+            { key: 'offpeak', label: '離峰', headway: route.offPeakHeadway },
+            {
+              key: 'holiday',
+              label: '例假日',
+              headway: route.holidayOffPeakHeadway || route.holidayPeakHeadway || route.offPeakHeadway,
+            },
+          ].filter((p): p is { key: Period; label: string; headway: string } => !!p.headway);
+
+          const activePeriod = allPeriods.find(p => p.key === currentPeriod);
+          const inactivePeriods = allPeriods.filter(p => p.key !== currentPeriod);
+
+          return (
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3 mb-4">
+              <div className="flex gap-4 text-xs text-gray-500 mb-2.5">
+                <span>首班 {formatBusTime(direction === '0' ? route.goFirstBusTime : route.backFirstBusTime)}</span>
+                <span>末班 {formatBusTime(direction === '0' ? route.goLastBusTime : route.backLastBusTime)}</span>
               </div>
-              <div>
-                <span className="text-gray-400">末班車：</span>
-                {formatBusTime(direction === '0' ? route.goLastBusTime : route.backLastBusTime)}
-              </div>
-              {route.peakHeadway && (
-                <div>
-                  <span className="text-gray-400">尖峰：</span>
-                  {formatHeadway(route.peakHeadway)}
-                </div>
-              )}
-              {route.offPeakHeadway && (
-                <div>
-                  <span className="text-gray-400">離峰：</span>
-                  {formatHeadway(route.offPeakHeadway)}
+              {allPeriods.length > 0 && (
+                <div className="flex items-center gap-3">
+                  {activePeriod && (
+                    <div className="flex items-center gap-1.5 bg-blue-600 text-white rounded-lg px-2.5 py-1.5 shrink-0">
+                      <span className="text-xs font-medium">{activePeriod.label}</span>
+                      <span className="text-base font-bold">{formatHeadway(activePeriod.headway)}</span>
+                    </div>
+                  )}
+                  {inactivePeriods.length > 0 && (
+                    <div className="flex flex-col gap-0.5">
+                      {inactivePeriods.map(p => (
+                        <span key={p.key} className="text-xs text-gray-400">
+                          {p.label}：{formatHeadway(p.headway)}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-            <div className="mt-2 pt-2 border-t border-gray-100 text-right">
-              <a
-                href={timetableUrl}
-                className="text-blue-500 hover:text-blue-700 text-xs"
-              >
-                時刻表 &rsaquo;
-              </a>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Direction Toggle & Timer */}
         <div className="flex items-center justify-between mb-4">
@@ -223,7 +292,7 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
                   href={timetableUrl}
                   className="inline-block mt-2 text-sm text-amber-700 underline hover:text-amber-900"
                 >
-                  查看時刻表
+                  查看發車間隔
                 </a>
               </div>
             </div>
@@ -239,41 +308,52 @@ export default function RoutePage({ params }: { params: Promise<{ id: string }> 
           </div>
         ) : (
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm divide-y divide-gray-100">
-            {stops.map((stop, i) => (
-              <div
-                key={stop.Id}
-                className="flex items-center px-4 py-3 gap-3"
-              >
-                {/* Sequence indicator */}
-                <div className="flex flex-col items-center w-6 shrink-0">
-                  <div
-                    className={`w-3 h-3 rounded-full border-2 ${
-                      stop.status === 'arriving'
-                        ? 'bg-green-500 border-green-500'
-                        : stop.status === 'soon'
-                        ? 'bg-yellow-500 border-yellow-500'
-                        : 'bg-white border-gray-300'
-                    }`}
-                  />
-                  {i < stops.length - 1 && (
-                    <div className="w-0.5 h-4 bg-gray-200 mt-0.5" />
-                  )}
-                </div>
-
-                {/* Stop name */}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-gray-800 truncate">
-                    {stop.nameZh}
+            {stops.map((stop, i) => {
+              const isNearest = stop.Id === nearestStopId;
+              return (
+                <div
+                  key={stop.Id}
+                  ref={isNearest ? nearestStopRef : null}
+                  className={`flex items-center px-4 py-3 gap-3 ${
+                    isNearest ? 'bg-blue-50' : ''
+                  }`}
+                >
+                  {/* Sequence indicator */}
+                  <div className="flex flex-col items-center w-6 shrink-0">
+                    <div
+                      className={`w-3 h-3 rounded-full border-2 ${
+                        isNearest
+                          ? 'bg-blue-500 border-blue-500'
+                          : stop.status === 'arriving'
+                          ? 'bg-green-500 border-green-500'
+                          : stop.status === 'soon'
+                          ? 'bg-yellow-500 border-yellow-500'
+                          : 'bg-white border-gray-300'
+                      }`}
+                    />
+                    {i < stops.length - 1 && (
+                      <div className="w-0.5 h-4 bg-gray-200 mt-0.5" />
+                    )}
                   </div>
-                </div>
 
-                {/* Estimate */}
-                <EstimateBadge
-                  status={stop.status}
-                  statusText={stop.statusText}
-                />
-              </div>
-            ))}
+                  {/* Stop name */}
+                  <div className="flex-1 min-w-0">
+                    <div className={`font-medium truncate ${isNearest ? 'text-blue-700' : 'text-gray-800'}`}>
+                      {stop.nameZh}
+                    </div>
+                    {isNearest && (
+                      <div className="text-xs text-blue-500 mt-0.5">你在這</div>
+                    )}
+                  </div>
+
+                  {/* Estimate */}
+                  <EstimateBadge
+                    status={stop.status}
+                    statusText={stop.statusText}
+                  />
+                </div>
+              );
+            })}
           </div>
         )}
       </main>

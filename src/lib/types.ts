@@ -1,5 +1,6 @@
 export interface Route {
   Id: number;
+  NId?: string; // National route ID (TPE routes only), used for ebus.gov.taipei API
   nameZh: string;
   nameEn: string;
   departureZh: string;
@@ -10,6 +11,12 @@ export interface Route {
   backLastBusTime: string;
   peakHeadway: string;
   offPeakHeadway: string;
+  holidayGoFirstBusTime?: string;
+  holidayBackFirstBusTime?: string;
+  holidayGoLastBusTime?: string;
+  holidayBackLastBusTime?: string;
+  holidayPeakHeadway?: string;
+  holidayOffPeakHeadway?: string;
 }
 
 export interface Stop {
